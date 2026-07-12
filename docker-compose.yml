@@ -1,0 +1,295 @@
+version: "3.9"
+
+services:
+
+  ####################################
+  # Kafka
+  ####################################
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: kafka
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
+    ports:
+      - "39092:29092"
+
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,PLAINTEXT_HOST://:29092
+
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:39092
+
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  ####################################
+  # Cassandra
+  ####################################
+  cassandra:
+    image: cassandra:4.1
+    container_name: cassandra
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1.5G
+    ports:
+      - "9042:9042"
+    environment:
+      MAX_HEAP_SIZE: 512M
+      HEAP_NEWSIZE: 128M
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'describe keyspaces'"]
+      interval: 30s
+      timeout: 15s
+      retries: 30
+
+  ####################################
+  # Cassandra Init
+  ####################################
+  cassandra-init:
+    image: cassandra:4.1
+    container_name: cassandra-init
+
+    depends_on:
+      cassandra:
+        condition: service_healthy
+
+    volumes:
+      - ./cassandra:/scripts
+
+    entrypoint:
+      [
+        "cqlsh",
+        "cassandra",
+        "-f",
+        "/scripts/init.cql"
+      ]
+
+  ####################################
+  # Flink JobManager
+  ####################################
+  flink-jobmanager:
+    build:
+      context: ./flink
+    container_name: flink-jobmanager
+    hostname: flink-jobmanager
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+    command: jobmanager
+
+    ports:
+      - "8081:8081"
+
+    environment:
+
+      JOB_MANAGER_RPC_ADDRESS: flink-jobmanager
+
+      CASSANDRA_HOST: cassandra
+
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        jobmanager.rpc.port: 6123
+        rest.address: flink-jobmanager
+        rest.bind-address: 0.0.0.0
+        rest.port: 8081
+        taskmanager.numberOfTaskSlots: 2
+        parallelism.default: 1
+
+    depends_on:
+
+      kafka:
+        condition: service_healthy
+
+      cassandra:
+        condition: service_healthy
+
+  ####################################
+  # Flink TaskManager
+  ####################################
+  flink-taskmanager:
+    build:
+      context: ./flink
+    container_name: flink-taskmanager
+    hostname: flink-taskmanager
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+    command: taskmanager
+
+    environment:
+
+      JOB_MANAGER_RPC_ADDRESS: flink-jobmanager
+
+      CASSANDRA_HOST: cassandra
+
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 2
+        parallelism.default: 1
+
+    depends_on:
+
+      flink-jobmanager:
+        condition: service_started
+
+  ####################################
+  # Submit PyFlink Job
+  ####################################
+  flink-job-submitter:
+
+    build:
+      context: ./flink
+
+    container_name: flink-job-submitter
+
+    restart: on-failure
+
+    volumes:
+      - ./flink:/app
+
+    environment:
+
+      CASSANDRA_HOST: cassandra
+
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+
+    depends_on:
+
+      flink-jobmanager:
+        condition: service_started
+
+      cassandra-init:
+        condition: service_completed_successfully
+
+    command:
+      [
+        "flink",
+        "run",
+        "-m",
+        "flink-jobmanager:8081",
+        "-py",
+        "/app/fraud_detector.py"
+      ]
+
+  ####################################
+  # Transaction Generator
+  ####################################
+  generator:
+    build:
+      context: ./generator
+    container_name: generator
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 128M
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+
+    depends_on:
+
+      kafka:
+        condition: service_healthy
+
+  ####################################
+  # FastAPI Backend
+  ####################################
+  backend:
+    build:
+      context: ./backend
+    container_name: backend
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+    ports:
+      - "8000:8000"
+
+    environment:
+
+      CASSANDRA_HOST: cassandra
+
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+
+    depends_on:
+
+      cassandra:
+        condition: service_healthy
+
+  ####################################
+  # Streamlit Dashboard
+  ####################################
+  frontend:
+    build:
+      context: ./frontend
+    container_name: frontend
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+    ports:
+      - "8501:8501"
+
+    environment:
+      BACKEND_URL: http://backend:8000
+
+    depends_on:
+      - backend
+
+####################################
+# Volumes
+####################################
+
+volumes:
+
+  cassandra_data:
