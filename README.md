@@ -304,7 +304,7 @@ GET /transaction/{transaction_id}
 ## Clone Repository
 
 ```bash
-git clone https://github.com/yourusername/financial-fraud-detection.git
+git clone https://github.com/muddassir787/financial-fraud-detection.git
 
 cd financial-fraud-detection
 ```
