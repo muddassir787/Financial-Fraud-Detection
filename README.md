@@ -6,7 +6,7 @@ This project is a complete real-time financial fraud detection platform built us
 The system demonstrates how modern event-driven architectures can be used to detect suspicious financial transactions in real time.
 
 Architecture
-                    +----------------------+
+    ```                +----------------------+
                     | Transaction Generator|
                     +----------+-----------+
                                |
@@ -40,7 +40,7 @@ Architecture
                        FastAPI Backend API
                                 |
                                 |
-                         Streamlit Dashboard
+                         Streamlit Dashboard ```
 Features
 Real-time transaction generation
 Kafka event streaming
